@@ -1,9 +1,11 @@
 """Run the indirect-injection test pages. python bench/indirect.py [--guard]
-(--holdout runs the set written after tuning. --guard uses SAFEWEBFETCH_GUARD_MODEL, default ProtectAI DeBERTa v2)"""
+(--holdout / --holdout2 run the sets written after tuning. --guard uses SAFEWEBFETCH_GUARD_MODEL, default ProtectAI DeBERTa v2)"""
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import safewebfetch as s
-if "--holdout" in sys.argv:
+if "--holdout2" in sys.argv:
+    from indirect_holdout2 import ATTACKS, BENIGN
+elif "--holdout" in sys.argv:
     from indirect_holdout import ATTACKS, BENIGN
 else:
     from indirect_cases import ATTACKS, BENIGN
@@ -21,5 +23,5 @@ for name, page, good in BENIGN:
     ok = not r["blocked"] and all(g in r["text"] for g in good)
     passed += ok
     print(f"{'PASS' if ok else 'FP  '}  {name}" + ("" if ok else f"  -> {r['blocked'] or r['text'][:80]!r}"))
-label = (s.GUARD_MODEL.split("/")[-1] if guard else "rules only") + (" | holdout" if "--holdout" in sys.argv else "")
+label = (s.GUARD_MODEL.split("/")[-1] if guard else "rules only") + (" | holdout2" if "--holdout2" in sys.argv else " | holdout" if "--holdout" in sys.argv else "")
 print(f"\n[{label}] attacks stopped {stopped}/{len(ATTACKS)}, benign pages intact {passed}/{len(BENIGN)}")

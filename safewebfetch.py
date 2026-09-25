@@ -13,7 +13,7 @@ import argparse, base64, binascii, codecs, html, http.client, ipaddress, json, o
 import unicodedata, urllib.parse, zlib
 from html.parser import HTMLParser
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
 TEXT_TYPES = ("text/html", "text/plain", "application/xhtml+xml")
 MAX_BYTES = 600_000
@@ -200,26 +200,41 @@ def _style_rules(page):
 
 
 class _Text(HTMLParser):
+    """Splits a page into what a human sees and what is hidden from them.
+    Hidden = CSS/attribute-hidden elements and alt/title/aria-label text. Legitimate pages have no reason to hide
+    instructions for an AI there, so the hidden part is kept as evidence. Comments are dropped but not used as
+    evidence: they are full of notes to developers and translators ("TRANSLATORS: ignore the original text")."""
+
     def __init__(self, classes, ids):
         super().__init__(convert_charrefs=True)
         self.classes, self.ids = classes, ids
-        self.stack, self.out, self.off = [], [], 0
+        self.stack, self.out, self.hidden, self.skip, self.hid = [], [], [], 0, 0
 
-    def _hidden(self, tag, a):
-        return (tag in SKIP or "hidden" in a or (a.get("aria-hidden") or "").lower() == "true"
+    def _is_hidden(self, a):
+        return ("hidden" in a or (a.get("aria-hidden") or "").lower() == "true"
                 or _css_hidden(a.get("style") or "") or (a.get("id") or "") in self.ids
                 or bool(set((a.get("class") or "").split()) & self.classes))
 
+    def _pop(self, n):
+        for _, sk, hd in self.stack[n:]:
+            self.skip -= sk
+            self.hid -= hd
+        del self.stack[n:]
+
     def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if not self.skip:
+            self.hidden += ["\n" + v for k in ("alt", "title", "aria-label") for v in [a.get(k)] if v]
         if tag in BLOCK:
-            self.out.append("\n")
+            (self.hidden if self.hid else self.out).append("\n")
         if tag in VOID:
             return
         if self.stack and ((tag in AUTOCLOSE and self.stack[-1][0] == tag) or (tag in BLOCK and self.stack[-1][0] == "p")):
-            self.off -= self.stack.pop()[1]   # implicitly close an unclosed <p>/<li> sibling, like a browser
-        hide = self._hidden(tag, dict(attrs))
-        self.stack.append((tag, hide))
-        self.off += hide
+            self._pop(len(self.stack) - 1)   # implicitly close an unclosed <p>/<li> sibling, like a browser
+        sk, hd = tag in SKIP, self._is_hidden(a)
+        self.stack.append((tag, sk, hd))
+        self.skip += sk
+        self.hid += hd
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)   # browsers treat <div/> as an open tag; treating it as closed would un-hide what follows
@@ -227,24 +242,32 @@ class _Text(HTMLParser):
     def handle_endtag(self, tag):
         for i in range(len(self.stack) - 1, -1, -1):
             if self.stack[i][0] == tag:
-                self.off -= sum(h for _, h in self.stack[i:])
-                del self.stack[i:]
+                self._pop(i)
                 break
         if tag in BLOCK:
-            self.out.append("\n")
+            (self.hidden if self.hid else self.out).append("\n")
 
     def handle_data(self, d):
-        if not self.off:
-            self.out.append(d)
+        if not self.skip:
+            (self.hidden if self.hid else self.out).append(d)
+
+
+def _squash(parts):
+    text = re.sub(r"[ \t\r\f\v\xa0]+", " ", "".join(parts))
+    return re.sub(r"\s*\n\s*", "\n", text).strip()
+
+
+def split_visible(page):
+    """HTML -> (visible_text, hidden_text)."""
+    p = _Text(*_style_rules(page))
+    p.feed(page)
+    p.close()
+    return _squash(p.out), _squash(p.hidden)
 
 
 def to_text(page):
     """HTML -> visible text. Drops scripts, styles, comments and hidden elements (attributes, inline CSS, <style> rules)."""
-    p = _Text(*_style_rules(page))
-    p.feed(page)
-    p.close()
-    text = re.sub(r"[ \t\r\f\v\xa0]+", " ", "".join(p.out))
-    return re.sub(r"\s*\n\s*", "\n", text).strip()
+    return split_visible(page)[0]
 
 
 # ---------------------------------------------------------------- prompt-injection sentence removal
@@ -287,19 +310,30 @@ PATTERNS = [
     # fake chat turns and boundary markers
     r"<\|(im_start|im_end|system|assistant|user|endoftext)\|>|\[/?INST\]|<</?SYS>>",
     r"</?\s*(system|assistant|instructions?|untrusted[\w-]*|web[_-]?content|tool_result|function_results?|context)\s*>",
-    r"(^|\n)\s*(system|assistant)\s*:", r"={4,}\s*end\b|\bend\s+of\s+(the\s+)?(prompt|instructions|context|document)\b",
+    r"(^|\n)\s*(system|assistant)\s*:", r"={4,}\s*end\b|\bend\s+of\s+(the\s+)?(prompt|instructions|context|document)\b(?!\s+[a-z])",
     r'"(type|tool|function|name)"\s*:\s*"[^"]+"\s*,\s*"(arguments|parameters|input|args)"',   # fake tool-call JSON
     # command execution
     r"\b(curl|wget)\s+\S*https?://", r"\b(ncat|netcat)\b|\bnc\s+-[a-z]*e\b", r"base64\s+(-d|--decode)", r"\brm\s+-rf\s+[/~]",
     r"chmod\s+\+x", r"\bsudo\s+\w", r"(bash|sh|zsh)\s+-c\b", r"powershell\s+-", r"\|\s*(bash|sh)\b",
     # text addressing the AI directly
-    r"(이|본)\s*(글|페이지|문서|메일)을?\s*(읽는|보는|처리하는|요약하는)\s*(ai|에이아이|비서|어시스턴트|에이전트|모델|챗봇)",
+    r"(이|본|해당)\s*(글|페이지|문서|메일|내용)[을를]?\s*(읽는|보는|처리하는|요약하는|분석하는)\s*(ai|에이아이|인공지능|비서|어시스턴트|에이전트|모델|챗봇)",
     r"\b(ai|llm|assistant|agent|chatbot|model|gpt|claude|gemini)s?\b.{0,30}(reading|processing|summari[sz]ing|browsing|parsing)\s+this",
     r"\b(dear|attention|note\s+(to|for)|hey|hello|instructions?\s+for|message\s+(to|for))\s*[,:]?\s+(the\s+|any\s+|all\s+)?(\w+\s+)?(ai|llm|assistant|agent|chatbot|bot|model|language\s+models?|browser)s?\b",
     r"\bif\s+you\s+(are|'re)\s+(an?\s+)?(ai|llm|bot|(language\s+)?model|assistant|agent|summari[sz]ing|reading\s+this|processing\s+this)\b",
     r"\bwithout\s+(asking|confirm\w*|telling|notifying|checking\s+with)\s*(the\s+user|me|them|first)?\s*[.!,]?\s*$",
-    r"\bwithout\s+(the\s+)?user'?s?\s+(approval|permission|consent|knowledge)", r"(확인|허락|승인|동의)\s*(없이|받지\s*말고)", r"묻지\s*말고",
+    r"\bwithout\s+(the\s+)?user'?s?\s+(approval|permission|consent|knowledge)", r"(확인|허락|승인|동의)\s*(없이|받지\s*말고)\s*.{0,20}(해라|하라|하세요|해\s*주|해줘|보내|전송|실행|삭제|진행해|처리해|결제|승인해)", r"묻지\s*말고",
     r"(user|사용자).{0,20}(has\s+)?(already\s+)?(authori[sz]ed|approved|consented|허락했|승인했|동의했)",
+    # steering what the AI says about this page (no override words, so easy to miss)
+    r"\b(when|if|while|before)\s+(you\s+)?(are\s+|'re\s+)?(summari[sz]\w*|describ\w*|review\w*|compar\w*|writ\w+\s+about|answer\w*|talk\w*\s+about|recommend\w*|rank\w*|evaluat\w*)\s+(on\s+)?(this|these|the\s+(above|following)|our|it)\b.{0,80}\b(describe|call|present|say|state|claim|portray|frame|rate|skip|omit|leave\s+out|don'?t\s+(mention|include)|do\s+not\s+(mention|bring\s+up|include)|never\s+mention)\b",
+    r"(이|본|해당)\s*(글|페이지|문서|내용|기사|리뷰|제품)[을를]?\s*(요약|정리|소개|설명|번역|추천|평가)\w{0,4}\s*(때|경우).{0,60}(빼고|말고|넣지\s*말|언급하지|라고만|하지\s*말|적어\s*주|써\s*주)",
+    r"\b(always|only(\s+ever)?)\s+recommend\b",
+    r"\b(never|do\s+not|don'?t)\s+(mention|bring\s+up|disclose)\s+(\w+\s+){0,3}?(competitors?|recalls?|reports?|complaints?|issues|problems|risks|lawsuits?|reviews)\b",
+    r"\b(any|every|all|automated)\s+(ai\s+)?(assistants?|agents?|bots?|llms?|language\s+models?|crawlers?)\s+(helping|reading|processing|visiting|browsing|summari[sz]ing)\b",
+    r"\b(automated|any)\s+(ai\s+)?(assistants?|agents?|bots?)\s+(must|should|shall|are\s+(required|instructed|authori[sz]ed))\b",
+    r"\[\s*(system|assistant|admin|developer)\s*\]",
+    # "without asking" / "don't tell the user" in other languages
+    r"sin\s+(preguntar|avisar|confirmar|consultar)|sans\s+(demander|pr[ée]venir|confirmer)|ohne\s+(zu\s+fragen|nachzufragen|r[üu]ckfrage|best[äa]tigung)",
+    r"不要告诉用户|不要通知用户|无需确认|用户已(同意|授权)|(助手|人工智能|模型|AI).{0,20}(发送|发给|转发|上传)",
     # exfiltration
     r"\b(forward|send|exfiltrate|upload|post|email)\b.{0,40}\b(emails?|inbox|messages|files|passwords?|keys?|tokens?|credentials|history|conversation)\b.{0,20}\bto\s+(\S+@\S+|https?://|this\s+(address|url|email|server|link|endpoint)|the\s+following|me\b|us\b)",
     r"\b(forward|send|exfiltrate|upload|post|leak)\b.{0,20}\b(the\s+)?user'?s\s+(emails?|files|passwords?|keys?|tokens?|data|messages)",
@@ -443,7 +477,9 @@ def _guard_filter(text, chunk_chars=1500):
 
 def clean(page, guard=False, max_chars=8000, page_block=PAGE_BLOCK):
     """HTML you already have (e.g. an email body) -> dict(text, removed, blocked, guard_score). No network."""
-    text, removed = sanitize(to_text(page)[:max_chars * 2])
+    visible, hidden = split_visible(page)
+    text, removed = sanitize(visible[:max_chars * 2])
+    rule_hits = removed   # whole-page decisions use rule hits only; classifier false positives cost a sentence, not the page
     text = text[:max_chars]
     score = None
     if guard:
@@ -451,7 +487,15 @@ def clean(page, guard=False, max_chars=8000, page_block=PAGE_BLOCK):
         removed += extra
         if removed:
             text = text.rstrip("\n") + "\n" + MARK
-    blocked = f"page contains {removed} prompt-injection sentences" if page_block and removed >= page_block else None
+    # hidden text is never shown to the model, but an instruction hidden there marks the page as hostile
+    hidden = hidden[:max_chars * 2]
+    # rules only: hidden areas are full of non-prose (citation metadata, language menus) that classifiers misread
+    hidden_hits = sanitize(hidden)[1] if hidden else 0
+    blocked = None
+    if page_block and hidden_hits:
+        blocked = f"page hides {hidden_hits} prompt-injection fragment(s) from human readers"
+    elif page_block and rule_hits >= page_block:
+        blocked = f"page contains {rule_hits} prompt-injection sentences"
     return {"text": "" if blocked else text, "removed": removed, "blocked": blocked, "guard_score": score}
 
 
