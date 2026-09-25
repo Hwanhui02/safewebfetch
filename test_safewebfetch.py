@@ -1,6 +1,7 @@
 """오프라인 시험: python3 test_safewebfetch.py (pytest로도 돈다)"""
 import ipaddress, json, subprocess, sys
-from safewebfetch import Blocked, _embedded_v4, check, is_suspicious, sanitize, to_text, wrap
+import os
+from safewebfetch import Blocked, _embedded_v4, check, clean, is_suspicious, sanitize, to_text, wrap
 
 BAD_URLS = ["file:///etc/passwd", "ftp://example.com/x", "http://127.0.0.1:11434/api/tags", "http://localhost/",
             "http://192.168.0.1/", "http://10.0.0.1/", "http://169.254.169.254/latest/meta-data/",
@@ -101,6 +102,15 @@ def test_hidden_html():
     out = to_text(page)
     assert "S" not in out.replace("visible", "").replace("half", ""), out
     assert "visible" in out and "half" in out, out
+
+
+def test_indirect_pages_no_regression():
+    """bench/indirect_cases.py 규칙만 결과가 나빠지지 않는지(v0.3.0: 23/26, 11/12)."""
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench"))
+    from indirect_cases import ATTACKS, BENIGN
+    stopped = sum(not any(b in clean(p)["text"] for b in bad) for _, p, bad in ATTACKS)
+    intact = sum(not (r := clean(p))["blocked"] and all(g in r["text"] for g in good) for _, p, good in BENIGN)
+    assert stopped >= 23 and intact >= 11, (stopped, intact)
 
 
 def test_wrap():

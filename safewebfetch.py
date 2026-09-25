@@ -13,12 +13,13 @@ import argparse, base64, binascii, codecs, html, http.client, ipaddress, json, o
 import unicodedata, urllib.parse, zlib
 from html.parser import HTMLParser
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
 TEXT_TYPES = ("text/html", "text/plain", "application/xhtml+xml")
 MAX_BYTES = 600_000
-GUARD_MODEL = os.environ.get("SAFEWEBFETCH_GUARD_MODEL", "meta-llama/Llama-Prompt-Guard-2-86M")
+GUARD_MODEL = os.environ.get("SAFEWEBFETCH_GUARD_MODEL", "protectai/deberta-v3-base-prompt-injection-v2")
 GUARD_THRESHOLD = 0.8
+MARK = "[suspicious text removed]"
 PAGE_BLOCK = 3   # 의심 문장이 이만큼 나오면 페이지 전체를 공격 페이지로 보고 버린다
 
 
@@ -252,7 +253,7 @@ INVISIBLE = re.compile("[­͏؜ᅟᅠ឴឵᠎​-‏‪-‮⁠-⁤"
 # 이 목록에 정규식을 더하면 규칙이 늘어난다
 PATTERNS = [
     # 영어: 지시 무시·역할 변경. 주제어만("system prompt", "jailbreak")으로는 걸지 않는다 — LLM을 설명하는 정상 글이 걸린다
-    r"\b(ignore|disregard|forget|override|bypass|skip)\s+(about\s+)?(all\s+|any\s+|every\s+)?(of\s+)?(the\s+|your\s+|my\s+|what\s+)?(previous|prior|above|earlier|preceding|original|initial|provided|given|existing|former)\b",
+    r"\b(ignore|disregard|forget|override|bypass|skip)\s+(about\s+)?(all\s+|any\s+|every\s+)?(of\s+)?(the\s+|your\s+|my\s+|what\s+)?(previous|prior|above|earlier|preceding|original|initial|provided|given|existing|former)\s+(\w+\s+){0,2}?(instructions?|prompts?|messages?|rules|directions|context|orders|commands|guidelines|text|conversation|input|content|information|tasks?)\b",
     r"\b(ignore|disregard|forget|override|bypass)\s+.{0,20}\b(your|the\s+system|all)\s+(instructions?|rules|guidelines|prompts?|directions|orders|context|programming|restrictions|safety)",
     r"\b(ignore|disregard|forget)\s+(what|everything|all)\s+.{0,20}\b(said|told|before|above|earlier|given)",
     r"forget\s+(everything|all)\b", r"(do\s+not|don'?t|stop)\s+(follow|obey|listen\s+to)\s+(your|the|any|previous)",
@@ -261,7 +262,7 @@ PATTERNS = [
     r"\b(new|updated|real|actual|true|revised|different)\s+(instructions?|task|goal|objective|rules|directive|orders?)\b\s*(is|are|:|now|comes|follows)",
     r"your\s+(new|real|actual|true|only|next)\s+(task|job|goal|instructions?|objective|purpose)\s+(is|are|now)\b",
     r"(now|here)\s+comes\s+(a|the|your)\s+(new|next|second|real)\s+(task|test|instruction)",
-    r"from\s+now\s+on,?\s+(you|your|always|only|respond|answer)", r"\bact\s+as\s+(an?\s+)?(admin|root|developer|system|unrestricted|jailbroken)",
+    r"from\s+now\s+on,?\s+(you\s+(will|must|should|are|shall|have\s+to|need\s+to|may\s+only)|your|always|only|respond|answer|act)", r"\bact\s+as\s+(an?\s+)?(admin|root|developer|system|unrestricted|jailbroken)",
     r"\b(i\s+want|i'?d\s+like)\s+you\s+to\s+(act|pretend|behave|role-?play|respond|answer|be\s+(a|an|my))\b",
     r"pretend\s+(to\s+be|you\s+are|that\s+you)", r"\brole-?play\s+as\b", r"(?-i:\bDAN\b)|do\s+anything\s+now",
     r"\b(enter|enable|activate|switch\s+to)\s+(developer|debug|god|admin|sudo|unrestricted)\s+mode",
@@ -293,7 +294,8 @@ PATTERNS = [
     # AI에게 말을 거는 간접 지시
     r"(이|본)\s*(글|페이지|문서|메일)을?\s*(읽는|보는|처리하는|요약하는)\s*(ai|에이아이|비서|어시스턴트|에이전트|모델|챗봇)",
     r"\b(ai|llm|assistant|agent|chatbot|model|gpt|claude|gemini)s?\b.{0,30}(reading|processing|summari[sz]ing|browsing|parsing)\s+this",
-    r"\b(dear|attention|note\s+to|hey|hello)\s*,?\s+(ai|llm|assistant|agent|chatbot|language\s+model)",
+    r"\b(dear|attention|note\s+(to|for)|hey|hello|instructions?\s+for|message\s+(to|for))\s*[,:]?\s+(the\s+|any\s+|all\s+)?(\w+\s+)?(ai|llm|assistant|agent|chatbot|bot|model|language\s+models?|browser)s?\b",
+    r"\bif\s+you\s+(are|'re)\s+(an?\s+)?(ai|llm|bot|(language\s+)?model|assistant|agent|summari[sz]ing|reading\s+this|processing\s+this)\b",
     r"\bwithout\s+(asking|confirm\w*|telling|notifying|checking\s+with)\s*(the\s+user|me|them|first)?\s*[.!,]?\s*$",
     r"\bwithout\s+(the\s+)?user'?s?\s+(approval|permission|consent|knowledge)", r"(확인|허락|승인|동의)\s*(없이|받지\s*말고)", r"묻지\s*말고",
     r"(user|사용자).{0,20}(has\s+)?(already\s+)?(authori[sz]ed|approved|consented|허락했|승인했|동의했)",
@@ -361,7 +363,7 @@ def sanitize(text):
             bad[i] = bad[i + 1] = True
     kept = [s for s, b in zip(parts, bad) if not b]
     removed = sum(bad)
-    return "\n".join(kept) + ("\n[suspicious text removed]" if removed else ""), removed
+    return "\n".join(kept) + ("\n" + MARK if removed else ""), removed
 
 
 # ---------------------------------------------------------------- 선택: ML 분류기
@@ -371,7 +373,7 @@ _guard = None
 
 def guard_score(text):
     """분류기 점수(0~1, 높을수록 조종 시도). transformers·모델이 없으면 None.
-    기본은 Meta Prompt Guard 2(승인 필요). SAFEWEBFETCH_GUARD_MODEL로 다른 모델을 쓸 수 있다."""
+    기본은 ProtectAI DeBERTa v2(승인 불필요). SAFEWEBFETCH_GUARD_MODEL로 다른 모델(예: Prompt Guard 2)을 쓸 수 있다."""
     global _guard
     if _guard is None:
         try:
@@ -405,15 +407,51 @@ def read(url, guard=False, max_chars=8000, page_block=PAGE_BLOCK):
         final, page = fetch(url)
     except Blocked as e:
         return {"url": url, "text": "", "removed": 0, "blocked": str(e), "guard_score": None}
+    return dict(clean(page, guard, max_chars, page_block), url=final)
+
+
+def _guard_filter(text, chunk_chars=1500):
+    """분류기로 걸러 낸다. 덩어리마다 채점하고, 걸린 덩어리만 문장별로 다시 채점해 그 문장만 지운다
+    (한 문장 오탐으로 페이지 전체를 잃지 않게). 문장 하나하나는 무해한데 덩어리가 걸리면 덩어리를 지운다.
+    → (남은 글, 지운 문장 수, 최고 점수). 분류기가 없으면 점수는 None."""
+    lines = [l for l in text.split("\n") if l.strip() and l != MARK]
+    chunks, cur = [], []
+    for l in lines:
+        if cur and sum(map(len, cur)) + len(l) > chunk_chars:
+            chunks.append(cur)
+            cur = []
+        cur.append(l)
+    if cur:
+        chunks.append(cur)
+    kept, removed, best = [], 0, None
+    for chunk in chunks:
+        sc = guard_score("\n".join(chunk))
+        if sc is None:
+            return text, 0, None
+        best = max(best or 0.0, sc)
+        if sc < GUARD_THRESHOLD:
+            kept += chunk
+            continue
+        bad = [guard_score(l) >= GUARD_THRESHOLD for l in chunk] if len(chunk) > 1 else [True]
+        if not any(bad):
+            bad = [True] * len(chunk)
+        kept += [l for l, b in zip(chunk, bad) if not b]
+        removed += sum(bad)
+    return "\n".join(kept), removed, best
+
+
+def clean(page, guard=False, max_chars=8000, page_block=PAGE_BLOCK):
+    """이미 가진 HTML(메일 본문 등) → dict(text, removed, blocked, guard_score). 네트워크를 쓰지 않는다."""
     text, removed = sanitize(to_text(page)[:max_chars * 2])
     text = text[:max_chars]
-    score = guard_score(text) if guard else None
-    blocked = None
-    if page_block and removed >= page_block:
-        blocked = f"page contains {removed} prompt-injection sentences"
-    elif score is not None and score >= GUARD_THRESHOLD:
-        blocked = f"classifier flagged the page as prompt injection ({score:.2f})"
-    return {"url": final, "text": "" if blocked else text, "removed": removed, "blocked": blocked, "guard_score": score}
+    score = None
+    if guard:
+        text, extra, score = _guard_filter(text)
+        removed += extra
+        if removed:
+            text = text.rstrip("\n") + "\n" + MARK
+    blocked = f"page contains {removed} prompt-injection sentences" if page_block and removed >= page_block else None
+    return {"text": "" if blocked else text, "removed": removed, "blocked": blocked, "guard_score": score}
 
 
 def wrap(text, url):
@@ -486,6 +524,9 @@ def main(argv=None):
     except OSError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
+    if a.guard and r["guard_score"] is None and not r["blocked"]:
+        print("warning: --guard requested but the classifier is not available (pip install 'safewebfetch[guard]' "
+              "and download the model); rules only", file=sys.stderr)
     if a.json:
         print(json.dumps(r, ensure_ascii=False))
     elif r["blocked"]:
