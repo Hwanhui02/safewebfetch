@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "safewebfetch"
+version = "0.1.0"
+description = "Fetch web pages safely for LLM agents: SSRF block, no downloads, prompt-injection stripping."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = []
+
+[project.optional-dependencies]
+guard = ["torch", "transformers", "huggingface_hub"]
+
+[project.scripts]
+safewebfetch = "safewebfetch:main"
+
+[tool.setuptools]
+py-modules = ["safewebfetch"]
