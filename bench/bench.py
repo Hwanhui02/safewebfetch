@@ -1,6 +1,6 @@
 """Rule-filter benchmark. Run: pip install huggingface_hub pyarrow && python bench/bench.py
-1) 공개 프롬프트 인젝션 데이터셋: 공격을 몇 % 잡고, 정상 문장을 몇 % 잘못 지우나
-2) 실제 웹 페이지: 정상 페이지에서 문장을 몇 개 잘못 지우나"""
+1) public prompt-injection datasets: % of attacks caught, % of benign prompts flagged
+2) real web pages: how many lines of benign pages get removed"""
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pyarrow.parquet as pq

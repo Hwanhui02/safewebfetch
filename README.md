@@ -32,6 +32,15 @@ Reproduce: `python bench/bench.py` (public datasets, real pages) and `python ben
 
 The rules overfit: they stop most of what they were tuned on and fewer than half of new attacks. **Use `--guard`.**
 
+**Versus the classifier alone.** A common setup is to strip HTML tags and run a classifier. Same pages, same model, same thresholds (`bench/vs_classifier.py`):
+
+| | dev attacks | dev benign | holdout attacks | holdout benign |
+|---|---|---|---|---|
+| ProtectAI v2 alone (tags stripped) | 18/26 | 9/12 | 9/12 | 4/6 |
+| safewebfetch `--guard` (ProtectAI v2 inside) | **24/26** | 8/12 | **11/12** | **5/6** |
+
+The classifier alone misses hidden text (CSS-hidden, white-on-white, Unicode tag characters) and markdown-image exfiltration, because it never sees what was hidden. It also does nothing about SSRF or downloads. The one extra benign loss on dev is the deliberate `curl | bash` removal.
+
 **Public prompt-injection datasets** (mostly direct chat prompts, not web pages):
 
 | | [deepset](https://huggingface.co/datasets/deepset/prompt-injections) caught / FP | [xTRam1](https://huggingface.co/datasets/xTRam1/safe-guard-prompt-injection) caught / FP |
@@ -127,6 +136,10 @@ AI 에이전트가 웹 페이지를 읽을 때 생기는 위험을 막아 주는
 
 **측정 결과**: 실제 사건을 본뜬 간접 공격 페이지로 쟀습니다. 규칙만 쓰면 규칙을 조정한 세트에서는 23/26을 막지만, 조정 뒤에 새로 쓴 공격(홀드아웃)은 **5/12**만 막습니다. ML 분류기(`--guard`, ProtectAI)를 켜면 **11/12**를 막습니다. 대신 정상 페이지 문장을 가끔 지웁니다(실제 페이지 기준 0.4%). **`--guard`를 켜서 쓰는 것을 권장합니다.**
 
+**ProtectAI 단독과 비교**: 같은 모델을 태그만 벗긴 글에 그대로 쓰면 처음 보는 공격 9/12, 이 도구 안에서 쓰면 11/12입니다. 숨긴 글과 마크다운 이미지 유출은 분류기 혼자서는 못 봅니다. 내부망 차단과 다운로드 차단도 이 도구만 합니다.
+
+**라이선스**: 코드는 MIT입니다. 분류기 모델은 저장소에 넣지 않고, 사용자가 처음 쓸 때 Hugging Face에서 받습니다. 기본 모델(ProtectAI)은 Apache-2.0입니다.
+
 **가장 중요한 방어**는 AI가 웹을 읽은 뒤 사람 확인 없이 메일 발송, 삭제, 결제, 명령 실행을 하지 못하게 하는 것입니다. 이 도구는 그 앞에 두는 한 겹입니다. MCP로 붙였다면 에이전트의 기본 웹 읽기 도구는 꺼야 효과가 있습니다.
 
 ```bash
@@ -138,4 +151,4 @@ claude mcp add safewebfetch -- safewebfetch --mcp --guard
 
 ## License
 
-MIT
+MIT for this code. The optional classifiers are not bundled: they are downloaded from Hugging Face on first use under their own licenses. The default [ProtectAI DeBERTa v3 v2](https://huggingface.co/protectai/deberta-v3-base-prompt-injection-v2) is Apache-2.0, built on [microsoft/deberta-v3-base](https://huggingface.co/microsoft/deberta-v3-base) (MIT). [Llama Prompt Guard 2](https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M) is under the Llama Community License and requires access approval.
