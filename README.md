@@ -19,7 +19,23 @@ When an agent reads a web page, the page can attack it: point it at internal add
 | Hidden instructions as evidence | Hidden text is never passed to the model, but it is still checked with the rules. A page that hides an instruction for an AI (in CSS-hidden elements or alt/title/aria-label) is dropped entirely: legitimate pages have no reason to do that. HTML comments are not used as evidence (they are full of notes like "TRANSLATORS: ignore the original text"). |
 | Boundary confusion | Output is wrapped in `<untrusted_web_content_RANDOM>` tags with a random suffix, so the page can't "close" the block and talk as the system. |
 
-## Measured (v0.4.0)
+## Independent tests (read this first)
+
+Two test sets were written by **Codex (OpenAI) without reading this code**: [codex](bench/indirect_codex.py) (30 attacks, 15 benign, mixed hidden/visible) and [codex2](bench/indirect_codex2.py) (30 attacks, 20 benign, mostly attacks blended into visible prose, 8+ languages, hard benign pages such as chat transcripts). codex was measured before any tuning, then used to improve the rules. codex2 was committed after that and run once, never tuned on.
+
+| | codex (before tuning) | codex2 (never tuned on) |
+|---|---|---|
+| Rules only | 19/30 stopped, 0/15 FP | **12/30** stopped, 2/20 FP |
+| ProtectAI v2 alone (tags stripped) | 28/30 stopped, 12/15 benign intact | 23/30 stopped, 17/20 benign intact |
+| safewebfetch `--guard` | 28/30 stopped, 3/15 FP | **24/30** stopped, 6/20 FP (15/20 intact) |
+
+What this means:
+- **Rules barely work on instructions blended into normal prose** (12/30). Our own test sets below overstated them because the same author wrote the rules and the attacks.
+- **Detection comes almost entirely from the classifier.** Against the classifier alone, `--guard` stopped 0 and 1 more attacks and lost 1 and 2 more benign pages.
+- The rules also misfire on chat transcripts and support scripts ("Assistant: …", "Agent: …").
+- What safewebfetch adds that a classifier cannot: SSRF and download blocking, never passing hidden text to the model, the untrusted-content wrapper, and an MCP tool that can replace the agent's raw web access.
+
+## Author-written test sets (v0.4.0, optimistic)
 
 Reproduce: `python bench/bench.py [--guard]` (public datasets, real pages) and `python bench/indirect.py [--holdout | --holdout2] [--guard]`.
 
@@ -38,7 +54,7 @@ Reproduce: `python bench/bench.py [--guard]` (public datasets, real pages) and `
 
 Rules alone still generalise poorly to attack styles they were not written for (holdout 6/12). The classifier covers much of that gap, at the price of deleting some benign imperative sentences on short pages ("mix the sauce first", "you agree to the terms"). **Use `--guard`.**
 
-**Versus the classifier alone.** A common setup is to strip HTML tags and run a classifier. Same pages, same model, same thresholds (`bench/vs_classifier.py`):
+**Versus the classifier alone, on author-written sets** (see the independent results above, where the gap mostly disappears). A common setup is to strip HTML tags and run a classifier. Same pages, same model, same thresholds (`bench/vs_classifier.py`):
 
 | | dev attacks | dev benign | holdout attacks | holdout benign | holdout2 attacks | holdout2 benign |
 |---|---|---|---|---|---|---|
@@ -142,7 +158,9 @@ AI 에이전트가 웹 페이지를 읽을 때 생기는 위험을 막아 주는
 - **조종 문장 제거**: 10개 언어 규칙으로 찾습니다. 문장마다 전각 문자, 모양이 같은 키릴 문자, 띄어 쓴 글자, 리트(1gn0re), URL 인코딩, rot13, base64, hex를 풀어서 다시 검사합니다. 두 줄로 쪼갠 지시도 잡습니다. 한 페이지에서 3문장 이상 나오면 페이지 전체를 버립니다.
 - **경계 포장**: 결과를 무작위 이름의 태그로 감싸서, 페이지가 태그를 닫고 시스템인 척할 수 없게 합니다.
 
-**측정 결과(v0.4.0)**: 실제 사건을 본뜬 간접 공격 페이지로 쟀습니다. 개선 전에 커밋해 둔 시험 세트(holdout2)에서 규칙만으로 12/14, ML 분류기(`--guard`)를 켜면 13/14를 막습니다. v0.3.0은 각각 6/14, 10/14였습니다. 다만 규칙은 처음 보는 유형에 약하고(holdout 6/12), 분류기는 짧은 정상 글의 명령형 문장을 가끔 지웁니다. **`--guard`를 켜서 쓰는 것을 권장합니다.**
+**독립 시험 결과(가장 중요)**: 이 코드를 보지 않은 Codex가 쓴 시험 세트(codex2, 한 번도 튜닝에 안 씀)에서 규칙만으로는 12/30, `--guard`는 24/30을 막았습니다. ProtectAI 단독은 23/30이었습니다. 즉 **탐지는 대부분 분류기가 하고, 규칙은 글 속에 섞은 지시에 약합니다.** 이 도구만의 가치는 내부망·다운로드 차단, 숨긴 글을 모델에 넘기지 않는 것, 경계 포장, MCP 도구입니다.
+
+**직접 만든 시험 세트 결과(v0.4.0, 낙관적)**: 실제 사건을 본뜬 간접 공격 페이지로 쟀습니다. 개선 전에 커밋해 둔 시험 세트(holdout2)에서 규칙만으로 12/14, ML 분류기(`--guard`)를 켜면 13/14를 막습니다. v0.3.0은 각각 6/14, 10/14였습니다. 다만 규칙은 처음 보는 유형에 약하고(holdout 6/12), 분류기는 짧은 정상 글의 명령형 문장을 가끔 지웁니다. **`--guard`를 켜서 쓰는 것을 권장합니다.**
 
 **숨긴 지시 = 증거**: 숨긴 글은 모델에 넘기지 않지만 규칙으로는 검사합니다. AI에게 보내는 지시를 숨긴 페이지는 통째로 버립니다.
 
