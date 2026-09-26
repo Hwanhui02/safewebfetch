@@ -174,14 +174,28 @@ def _css_hidden(style):
         return True
     fg = re.search(r"(?:^|;)color:([^;!]+)", s)
     bg = re.search(r"(?:^|;)background(?:-color)?:([^;!]+)", s)
-    return bool(fg and bg and _norm_color(fg.group(1)) == _norm_color(bg.group(1)))   # same text and background color
+    if fg and bg:
+        f, g = _rgb(fg.group(1)), _rgb(bg.group(1))
+        if f and g:
+            (l1, l2) = sorted((_lum(f), _lum(g)), reverse=True)
+            return (l1 + 0.05) / (l2 + 0.05) < 1.3   # near-invisible contrast (WCAG ratio; readable text needs >= 4.5)
+        return fg.group(1).strip() == bg.group(1).strip()
+    return False
 
 
-def _norm_color(c):
-    c = c.strip()
+def _rgb(c):
+    c = {"white": "#ffffff", "black": "#000000"}.get(c.strip(), c.strip())
     if re.fullmatch(r"#[0-9a-f]{3}", c):
         c = "#" + "".join(ch * 2 for ch in c[1:])
-    return {"white": "#ffffff", "black": "#000000"}.get(c, c)
+    if re.fullmatch(r"#[0-9a-f]{6}", c):
+        return tuple(int(c[i:i + 2], 16) for i in (1, 3, 5))
+    m = re.fullmatch(r"rgba?\((\d+),(\d+),(\d+)(,[\d.]+)?\)", c)
+    return tuple(int(x) for x in m.groups()[:3]) if m else None
+
+
+def _lum(rgb):
+    ch = [(v / 255) / 12.92 if v <= 10 else (((v / 255) + 0.055) / 1.055) ** 2.4 for v in rgb]
+    return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
 
 
 def _style_rules(page):
@@ -281,7 +295,7 @@ PATTERNS = [
     r"\b(ignore|disregard|forget|override|bypass)\s+.{0,20}\b(your|the\s+system|all)\s+(instructions?|rules|guidelines|prompts?|directions|orders|context|programming|restrictions|safety)",
     r"\b(ignore|disregard|forget)\s+(what|everything|all)\s+.{0,20}\b(said|told|before|above|earlier|given)",
     r"forget\s+(everything|all)\b", r"(do\s+not|don'?t|stop)\s+(follow|obey|listen\s+to)\s+(your|the|any|previous)",
-    r"\b(reveal|print|show|repeat|output|leak|disclose|display|spell-?check)\b.{0,30}\b(system|developer|hidden|initial|original|secret|above|previous)\s+(prompt|instructions?|text|message)",
+    r"\b(reveal|print|show|repeat|output|leak|disclose|display|spell-?check)\b.{0,30}\b(system|developer|hidden|initial|original|secret|internal|above|previous)\s+(prompt|instructions?|text|messages?|polic(y|ies)|rules|guidelines|configuration|consignes)",
     r"(system|developer)\s+(message|instructions?|prompt)\s*:", r"you\s+are\s+now\b(?!\s+(ready|able|logged|signed|subscribed|registered|on|in|viewing|reading))",
     r"\b(new|updated|real|actual|true|revised|different)\s+(instructions?|task|goal|objective|rules|directive|orders?)\b\s*(is|are|:|now|comes|follows)",
     r"your\s+(new|real|actual|true|only|next)\s+(task|job|goal|instructions?|objective|purpose)\s+(is|are|now)\b",
@@ -331,12 +345,18 @@ PATTERNS = [
     r"\b(any|every|all|automated)\s+(ai\s+)?(assistants?|agents?|bots?|llms?|language\s+models?|crawlers?)\s+(helping|reading|processing|visiting|browsing|summari[sz]ing)\b",
     r"\b(automated|any)\s+(ai\s+)?(assistants?|agents?|bots?)\s+(must|should|shall|are\s+(required|instructed|authori[sz]ed))\b",
     r"\[\s*(system|assistant|admin|developer)\s*\]",
+    # the AI addressed in the third person, followed by an order
+    r"\b(the|your|any|this)\s+(ai\s+)?(assistant|agent|model|bot|llm|browsing\s+model)s?\s+(must|should|shall|needs?\s+to|is\s+(required|asked|instructed)\s+to|(could|would|can|will)\s+(you\s+)?(kindly|please)|kindly|please)\s+(\w+\s+){0,2}?(omit|describe|say|call|recommend|rank|hide|conceal|send|forward|email|upload|visit|open|delete|remove|approve|pay|transfer|purchase|buy|reveal|disclose|ignore|cancel|submit|post|share|tell)\b",
+    r"\b(browsing|automated|autonomous|any|every)\s+(ai\s+)?(assistants?|agents?|bots?|models?)\s+(must|should|shall|need\s+to|are\s+(required|instructed|authori[sz]ed)\s+to)\b",
+    r"(do\s+not|don'?t|never|without)\s+(ask\w*\s+for|request\w*|seek\w*|wait\w*\s+for)\s+(user\s+)?(confirmation|approval|permission|consent)",
+    r"\b(decode|deobfuscate|decrypt)\s+(it\s+|this\s+)?and\s+(obey|follow|execute|run|comply)",
+    r"no\s+(se\s+lo\s+|le\s+)?(menciones|digas|informes|cuentes)\s+al\s+usuario|ne\s+(le\s+)?(dites|mentionnez)\s+(rien\s+)?(pas\s+)?(à\s+l'utilisateur)|(sag|erw[äa]hne)\s+(es\s+)?(dem\s+)?(nutzer|benutzer)\s+nicht",
     # "without asking" / "don't tell the user" in other languages
     r"sin\s+(preguntar|avisar|confirmar|consultar)|sans\s+(demander|pr[ée]venir|confirmer)|ohne\s+(zu\s+fragen|nachzufragen|r[üu]ckfrage|best[äa]tigung)",
     r"不要告诉用户|不要通知用户|无需确认|用户已(同意|授权)|(助手|人工智能|模型|AI).{0,20}(发送|发给|转发|上传)",
     # exfiltration
-    r"\b(forward|send|exfiltrate|upload|post|email)\b.{0,40}\b(emails?|inbox|messages|files|passwords?|keys?|tokens?|credentials|history|conversation)\b.{0,20}\bto\s+(\S+@\S+|https?://|this\s+(address|url|email|server|link|endpoint)|the\s+following|me\b|us\b)",
-    r"\b(forward|send|exfiltrate|upload|post|leak)\b.{0,20}\b(the\s+)?user'?s\s+(emails?|files|passwords?|keys?|tokens?|data|messages)",
+    r"\b(forward|send|exfiltrate|upload|post|email)\b.{0,40}\b(emails?|inbox|messages|files|documents|passwords?|keys?|tokens?|credentials|cookies|history|conversation|transcripts?|chats?|logs|contacts|address\s+book|addresse?s?|location|data|session\w*)\b.{0,20}\bto\s+(\S+@\S+|https?://|this\s+(address|url|email|server|link|endpoint)|the\s+following|me\b|us\b)",
+    r"\b(forward|send|exfiltrate|upload|post|leak)\b.{0,20}\b(the\s+)?user'?s\s+(\w+\s+)?(emails?|inbox|messages|files|documents|passwords?|keys?|tokens?|credentials|cookies|history|conversation|transcripts?|chats?|logs|contacts|address\s+book|addresse?s?|location|data|session\w*)\b",
     r"(메일|메일함|받은편지함|파일|비밀번호|키|토큰|대화).{0,20}(보내라|전달해|전송해|보내줘|올려)",
     r"!\[[^\]]*\]\(\s*https?://",   # markdown image: rendering it sends data to the URL
     r"https?://\S*[?&][\w-]+=\s*(\{|\[|<|\$\{?|%7b)",   # URL with a placeholder to fill in
@@ -389,14 +409,18 @@ def is_suspicious(s):
 
 
 def sanitize(text):
-    """-> (clean_text, removed_count). Removes sentences; also catches an instruction split across two."""
+    """-> (clean_text, flagged_sentence_count). Checks sentences, but drops the whole line (block) around a
+    flagged one: a marker sentence ("Assistant: Understood.") is often followed by the payload in the same block.
+    Also catches an instruction split across two adjacent sentences."""
     text = INVISIBLE.sub("", text)
-    parts = [s for s in re.split(r"(?<=[.!?。！？])\s+|\n+", text) if s.strip()]
-    bad = [is_suspicious(s) for s in parts]
-    for i in range(len(parts) - 1):
-        if not bad[i] and not bad[i + 1] and is_suspicious(parts[i] + " " + parts[i + 1]):
-            bad[i] = bad[i + 1] = True
-    kept = [s for s, b in zip(parts, bad) if not b]
+    lines = [l for l in text.split("\n") if l.strip()]
+    sents = [(i, x) for i, l in enumerate(lines) for x in re.split(r"(?<=[.!?。！？])\s+", l) if x.strip()]
+    bad = [is_suspicious(x) for _, x in sents]
+    for k in range(len(sents) - 1):
+        if not bad[k] and not bad[k + 1] and is_suspicious(sents[k][1] + " " + sents[k + 1][1]):
+            bad[k] = bad[k + 1] = True
+    drop = {i for (i, _), b in zip(sents, bad) if b}
+    kept = [l for i, l in enumerate(lines) if i not in drop]
     removed = sum(bad)
     return "\n".join(kept) + ("\n" + MARK if removed else ""), removed
 
