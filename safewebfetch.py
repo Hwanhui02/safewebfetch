@@ -13,7 +13,7 @@ import argparse, base64, binascii, codecs, html, http.client, ipaddress, json, o
 import unicodedata, urllib.parse, urllib.request, zlib
 from html.parser import HTMLParser
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
 TEXT_TYPES = ("text/html", "text/plain", "application/xhtml+xml")
 MAX_BYTES = 600_000
@@ -495,7 +495,7 @@ def guard_scores(texts, batch=32):
 
 # ---------------------------------------------------------------- high-level API and output
 
-def read(url, guard=False, max_chars=8000, page_block=PAGE_BLOCK, judge=None, nominate=True):
+def read(url, guard=False, max_chars=8000, page_block=PAGE_BLOCK, judge=None, nominate=False):
     """URL -> dict(url, text, removed, blocked, guard_score). text is empty when blocked."""
     try:
         final, page = fetch(url)
@@ -586,13 +586,14 @@ def judge_verdict(text, model=None):
     return v
 
 
-def clean(page, guard=False, max_chars=8000, page_block=PAGE_BLOCK, judge=None, nominate=True):
+def clean(page, guard=False, max_chars=8000, page_block=PAGE_BLOCK, judge=None, nominate=False):
     """HTML you already have (e.g. an email body) -> dict(text, removed, blocked, guard_score). No network,
     except the optional local judge. judge: an Ollama model name (default SAFEWEBFETCH_JUDGE).
     Rules and the classifier nominate suspicious lines; with a judge, the judge makes the final call on each
     nominated line; without one (or if it fails) rules and the classifier decide as before.
     nominate: with a judge, also send lines that name an AI ("assistant", "agent", "AI", ...), up to
-    NOMINATE_MAX per page. They are removed only if the judge says so."""
+    NOMINATE_MAX per page; removed only if the judge says so. Off by default: on codex5 it changed nothing and
+    costs time on AI-heavy pages; on codex4 it stopped 8 more attacks that named the AI."""
     judge = judge or JUDGE_MODEL
     visible, hidden = split_visible(page)
     lines, total = [], 0
@@ -643,7 +644,7 @@ def render(r):
     return f"Blocked: {r['blocked']}" if r["blocked"] else wrap(r["text"], r["url"])
 
 
-def mcp(guard=False, judge=None):
+def mcp(guard=False, judge=None, nominate=False):
     """MCP server over stdio (newline-delimited JSON-RPC) with a single fetch_url tool."""
     tool = {"name": "fetch_url",
             "description": "Fetch a public web page as cleaned, untrusted text. Blocks internal addresses, downloads "
@@ -668,7 +669,7 @@ def mcp(guard=False, judge=None):
             reply["result"] = {"tools": [tool]}
         elif method == "tools/call" and params.get("name") == "fetch_url":
             try:
-                r = read(str((params.get("arguments") or {}).get("url", "")), guard=guard, judge=judge)
+                r = read(str((params.get("arguments") or {}).get("url", "")), guard=guard, judge=judge, nominate=nominate)
                 reply["result"] = {"content": [{"type": "text", "text": render(r)}], "isError": bool(r["blocked"])}
             except Exception as e:
                 reply["result"] = {"content": [{"type": "text", "text": f"Error: {e}"}], "isError": True}
@@ -689,6 +690,8 @@ def main(argv=None):
                     help="classifier score that removes a sentence (default 0.8; 0.99 = fewer false positives, misses a few more)")
     ap.add_argument("--judge", metavar="MODEL", default=None,
                     help="local Ollama model that makes the final call on suspicious lines (e.g. gemma3:4b)")
+    ap.add_argument("--nominate", action="store_true",
+                    help="with --judge, also judge lines that name an AI (catches more, slower on AI-heavy pages)")
     ap.add_argument("--max-chars", type=int, default=8000)
     ap.add_argument("--page-block", type=int, default=PAGE_BLOCK,
                     help="drop the whole page if this many injection sentences are found (0 = never)")
@@ -699,12 +702,12 @@ def main(argv=None):
         global GUARD_THRESHOLD
         GUARD_THRESHOLD = a.guard_threshold
     if a.mcp:
-        mcp(guard=a.guard, judge=a.judge)
+        mcp(guard=a.guard, judge=a.judge, nominate=a.nominate)
         return 0
     if not a.url:
         ap.error("url is required")
     try:
-        r = read(a.url, guard=a.guard, max_chars=a.max_chars, page_block=a.page_block, judge=a.judge)
+        r = read(a.url, guard=a.guard, max_chars=a.max_chars, page_block=a.page_block, judge=a.judge, nominate=a.nominate)
     except OSError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

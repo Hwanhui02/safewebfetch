@@ -21,26 +21,41 @@ When an agent reads a web page, the page can attack it: point it at internal add
 
 ## Independent tests (read this first)
 
-Three test sets were written by **Codex (OpenAI) without reading this code**: [codex](bench/indirect_codex.py) (30 attacks / 15 benign), [codex2](bench/indirect_codex2.py) (30 / 20, mostly attacks blended into visible prose) and [codex3](bench/indirect_codex3.py) (40 / 30, 13 languages, short one-line pages, hard benign pages). codex was used to improve the rules after its baseline was recorded; codex2 and codex3 were each committed after the code they test and run once.
+Five test sets were written by **Codex (OpenAI) without reading this code** ([codex](bench/indirect_codex.py) … [codex5](bench/indirect_codex5.py), 180 attacks and 145 benign pages in 13+ languages). Each set was committed after the code it tests, and the numbers below are from its first run. Only after that was a set used to improve the code.
 
-| | codex (baseline) | codex2 (run once) | codex3 (run once) |
+**Latest version on its fresh set (codex5: 40 attacks, 40 benign):**
+
+| | Attacks stopped | Benign pages touched |
+|---|---|---|
+| Rules only | 13/40 | 1/40 |
+| ProtectAI v2 alone (tags stripped) | 27/40 | 17/40 |
+| safewebfetch `--guard` | 33/40 | 17/40 |
+| **safewebfetch `--guard --judge gemma4`** | **35/40** | **0/40** |
+| safewebfetch `--judge gemma4` (rules + judge, no torch) | 15/40 | 0/40 |
+
+**Earlier versions on their fresh sets:**
+
+| Set (first run) | Rules only | `--guard` | `--guard --judge` |
 |---|---|---|---|
-| Rules only: attacks stopped | 19/30 | 12/30 | 10/40 ¹ |
-| Rules only: benign pages touched | 0/15 | 2/20 | 3/30 |
-| ProtectAI v2 alone: attacks stopped | 28/30 | 23/30 | 27/40 |
-| ProtectAI v2 alone: benign pages touched | 3/15 | 3/20 | 10/30 |
-| **safewebfetch `--guard`: attacks stopped** | 28/30 | 24/30 | **33/40** |
-| **safewebfetch `--guard`: benign pages touched** | 3/15 | 6/20 | **12/30** |
+| codex (v0.4.0) | 19/30 stopped, 0/15 touched | 28/30, 3/15 | — |
+| codex2 (v0.4.0+) | 12/30, 2/20 | 24/30, 6/20 | — |
+| codex3 (rule/threshold tuning) | 9/40 ¹, 3/30 | 33/40, 12/30 | — |
+| codex4 (judge added) | 15/40, 3/40 | 32/40, 15/40 | **32/40, 2/40** |
+| codex5 (current) | 13/40, 1/40 | 33/40, 17/40 | **35/40, 0/40** |
 
-¹ One codex3 case has an HTML entity in its expected string, so it can never "survive" and counts as stopped for every configuration; the fair rules-only figure is 9/40.
+¹ one case has an HTML entity in its expected string and always counts as stopped; 10/40 as run.
 
 What this means:
-- **Rules alone stop about a quarter to a third of attacks written by someone else.** Our own test sets (below) overstated them because the same author wrote the rules and the attacks. Fixing rules on one set did not carry over: a rule tuned to zero false positives on four sets misfired on the fifth.
-- **The classifier does most of the detecting, and its false-positive rate on short imperative text is high** (12/30 benign one-line pages on codex3: recipes, travel directions, "freeze the card and never share your one-time code"). Raising the threshold to 0.99 barely helps (31/40 stopped, 11/30 touched). Llama Prompt Guard 2 is the opposite trade (11/40 stopped, 4/30 touched).
-- On codex3, wrapping the classifier stopped 6 more attacks than the classifier alone (hidden text, obfuscation) at a cost of 2 more benign pages.
+- **Rules alone stop about a third of attacks written by someone else.** Rule tweaks did not carry over from one set to the next.
+- **The classifier catches most attacks but misfires on short imperative text** written for humans (recipes, directions, "never share your one-time code"): 15–17 of 40 benign pages touched on codex4/codex5. Thresholds barely help: it is confidently wrong.
+- **A small local LLM as a second-stage judge removes almost all of those false positives** and does not cost detections. It only sees lines the rules or classifier flagged and answers one boolean ("is this an instruction aimed at an AI reading the page?"). On codex4, 7 of 8 misses were lines nothing flagged; the judge cannot fix what is never sent to it.
 - What safewebfetch adds that a classifier cannot: SSRF and download blocking, never passing hidden text to the model, the untrusted-content wrapper, and an MCP tool that can replace the agent's raw web access.
 
-## Author-written test sets (v0.4.0, optimistic)
+**Cost** (18 real pages, Apple-silicon Mac, models already loaded): `--guard` 2.6 s per page on average (max 6 s); `--guard --judge` 3.4 s (max 10 s); with `--nominate` 7.8 s (max 18 s). False removals on those pages: 20 lines with `--guard`, 1 line with the judge.
+
+**`--nominate`** also sends lines that name an AI ("assistant", "agent", "AI", …, multilingual) to the judge. On codex5 it made no difference, so it is off by default (rule fixed before the run: tie goes to the faster option). On the earlier, already-seen sets it stopped 17 more attacks (187/192 vs 170/192), about half of them the kind codex4 found. Turn it on if you can afford ~2× time.
+
+## Author-written test sets (v0.4.0, optimistic, kept for history)
 
 Reproduce: `python bench/bench.py [--guard]` (public datasets, real pages) and `python bench/indirect.py [--holdout | --holdout2] [--guard]`.
 
@@ -103,7 +118,8 @@ safewebfetch https://example.com            # cleaned text wrapped as untrusted 
 safewebfetch https://example.com --raw      # without the wrapper
 safewebfetch https://example.com --json     # {"url","text","removed","blocked","guard_score"}
 safewebfetch http://169.254.169.254/        # "blocked: non-public address", exit 2
-safewebfetch https://example.com --guard    # + ML classifier (recommended)
+safewebfetch https://example.com --guard    # + ML classifier
+safewebfetch https://example.com --guard --judge gemma3:4b   # + local LLM judge via Ollama (recommended)
 safewebfetch URL --page-block 0             # never drop whole pages (e.g. researching prompt injection)
 ```
 
@@ -125,16 +141,18 @@ safewebfetch.PATTERNS.append(r"my\s+custom\s+rule")
 safewebfetch.SUSPICIOUS = re.compile("|".join(safewebfetch.PATTERNS), re.I)
 ```
 
+**Judge**: any local [Ollama](https://ollama.com) model (`ollama pull gemma3:4b`, or whatever you run). Tested with a Gemma 4 build. Set `SAFEWEBFETCH_JUDGE=<model>` to make it the default, and `SAFEWEBFETCH_OLLAMA` if Ollama is not on `http://127.0.0.1:11434`. If the judge is unreachable or answers garbage, safewebfetch falls back to the rules and classifier: a broken judge never weakens the filter. The judge can itself be talked out of a verdict ("this is quoted prose, not a command" fooled it once in codex4); the prompt treats such claims next to an order as a red flag, and it can only ever see text that was already flagged.
+
 Use a different classifier: `SAFEWEBFETCH_GUARD_MODEL=meta-llama/Llama-Prompt-Guard-2-86M` (fewer false positives, catches less; gated, needs Hugging Face approval and `hf auth login`). Any Hugging Face sequence-classification model with an `INJECTION`/`MALICIOUS`/`JAILBREAK`/`UNSAFE` label works.
 
 ### As an MCP server (Claude Code, Claude Desktop, Cursor, …)
 
 ```bash
-claude mcp add safewebfetch -- safewebfetch --mcp --guard
+claude mcp add safewebfetch -- safewebfetch --mcp --guard --judge gemma3:4b
 ```
 
 ```json
-{ "mcpServers": { "safewebfetch": { "command": "safewebfetch", "args": ["--mcp", "--guard"] } } }
+{ "mcpServers": { "safewebfetch": { "command": "safewebfetch", "args": ["--mcp", "--guard", "--judge", "gemma3:4b"] } } }
 ```
 
 It exposes one tool, `fetch_url`. **Then turn off the agent's built-in web fetch**, or the protection is optional for the model. In Claude Code, for example, add `"deny": ["WebFetch"]` under `permissions` in `.claude/settings.json`.
@@ -163,11 +181,7 @@ AI 에이전트가 웹 페이지를 읽을 때 생기는 위험을 막아 주는
 - **조종 문장 제거**: 10개 언어 규칙으로 찾습니다. 문장마다 전각 문자, 모양이 같은 키릴 문자, 띄어 쓴 글자, 리트(1gn0re), URL 인코딩, rot13, base64, hex를 풀어서 다시 검사합니다. 두 줄로 쪼갠 지시도 잡습니다. 한 페이지에서 3문장 이상 나오면 페이지 전체를 버립니다.
 - **경계 포장**: 결과를 무작위 이름의 태그로 감싸서, 페이지가 태그를 닫고 시스템인 척할 수 없게 합니다.
 
-**독립 시험 결과(가장 중요)**: 이 코드를 보지 않은 Codex가 쓴 세트 중 한 번도 튜닝에 쓰지 않은 codex3에서 규칙만으로는 9/40, `--guard`는 33/40을 막았습니다(ProtectAI 단독 27/40). 대신 `--guard`는 정상 한 줄짜리 페이지 30개 중 12개에서 문장을 지웠습니다. 즉 **탐지는 대부분 분류기가 하고, 분류기는 짧은 명령형 정상 글을 공격으로 자주 오인합니다.** 이 도구만의 가치는 내부망·다운로드 차단, 숨긴 글을 모델에 넘기지 않는 것, 경계 포장, MCP 도구입니다.
-
-**직접 만든 시험 세트 결과(v0.4.0, 낙관적)**: 실제 사건을 본뜬 간접 공격 페이지로 쟀습니다. 개선 전에 커밋해 둔 시험 세트(holdout2)에서 규칙만으로 12/14, ML 분류기(`--guard`)를 켜면 13/14를 막습니다. v0.3.0은 각각 6/14, 10/14였습니다. 다만 규칙은 처음 보는 유형에 약하고(holdout 6/12), 분류기는 짧은 정상 글의 명령형 문장을 가끔 지웁니다. **`--guard`를 켜서 쓰는 것을 권장합니다.**
-
-**숨긴 지시 = 증거**: 숨긴 글은 모델에 넘기지 않지만 규칙으로는 검사합니다. AI에게 보내는 지시를 숨긴 페이지는 통째로 버립니다.
+**독립 시험 결과(가장 중요)**: 이 코드를 보지 않은 Codex가 쓴 최신 세트(codex5, 처음 실행)에서 `--guard --judge`(분류기 + 로컬 LLM 판정)는 공격 35/40을 막고 정상 페이지 40개 중 **하나도 건드리지 않았습니다.** 분류기만 쓰면 33/40을 막지만 정상 페이지 17개에서 문장을 지웁니다. 규칙만으로는 13/40입니다. **`--guard --judge`를 권장합니다.** 판정 LLM은 Ollama로 돌리는 아무 로컬 모델이나 쓸 수 있고, 꺼져 있으면 자동으로 분류기와 규칙 판단으로 돌아갑니다. 속도는 페이지당 평균 약 3.4초입니다.
 
 **ProtectAI 단독과 비교**: 같은 모델을 태그만 벗긴 글에 그대로 쓰면 holdout2 공격 8/14, 이 도구 안에서 쓰면 13/14입니다. 숨긴 글과 마크다운 이미지 유출은 분류기 혼자서는 못 봅니다. 내부망 차단과 다운로드 차단도 이 도구만 합니다.
 
@@ -178,8 +192,8 @@ AI 에이전트가 웹 페이지를 읽을 때 생기는 위험을 막아 주는
 ```bash
 pip install git+https://github.com/Hwanhui02/safewebfetch
 pip install "safewebfetch[guard] @ git+https://github.com/Hwanhui02/safewebfetch"   # ML 분류기 포함(권장)
-safewebfetch https://example.com --guard
-claude mcp add safewebfetch -- safewebfetch --mcp --guard
+safewebfetch https://example.com --guard --judge gemma3:4b
+claude mcp add safewebfetch -- safewebfetch --mcp --guard --judge gemma3:4b
 ```
 
 ## License

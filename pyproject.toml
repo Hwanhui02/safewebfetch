@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "safewebfetch"
-version = "0.4.0"
+version = "0.5.0"
 description = "Fetch web pages safely for LLM agents: SSRF block, no downloads, hidden-text and prompt-injection stripping, MCP server."
 readme = "README.md"
 requires-python = ">=3.9"
