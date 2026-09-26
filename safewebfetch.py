@@ -18,7 +18,7 @@ UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML,
 TEXT_TYPES = ("text/html", "text/plain", "application/xhtml+xml")
 MAX_BYTES = 600_000
 GUARD_MODEL = os.environ.get("SAFEWEBFETCH_GUARD_MODEL", "protectai/deberta-v3-base-prompt-injection-v2")
-GUARD_THRESHOLD = 0.8
+GUARD_THRESHOLD = float(os.environ.get("SAFEWEBFETCH_GUARD_THRESHOLD", "0.8"))
 MARK = "[suspicious text removed]"
 PAGE_BLOCK = 3   # drop the whole page once this many injection sentences are found
 
@@ -301,7 +301,6 @@ PATTERNS = [
     r"your\s+(new|real|actual|true|only|next)\s+(task|job|goal|instructions?|objective|purpose)\s+(is|are|now)\b",
     r"(now|here)\s+comes\s+(a|the|your)\s+(new|next|second|real)\s+(task|test|instruction)",
     r"from\s+now\s+on,?\s+(you\s+(will|must|should|are|shall|have\s+to|need\s+to|may\s+only)|your|always|only|respond|answer|act)", r"\bact\s+as\s+(an?\s+)?(admin|root|developer|system|unrestricted|jailbroken)",
-    r"\b(i\s+want|i'?d\s+like)\s+you\s+to\s+(act|pretend|behave|role-?play|respond|answer|be\s+(a|an|my))\b",
     r"pretend\s+(to\s+be|you\s+are|that\s+you)", r"\brole-?play\s+as\b", r"(?-i:\bDAN\b)|do\s+anything\s+now",
     r"\b(enter|enable|activate|switch\s+to)\s+(developer|debug|god|admin|sudo|unrestricted)\s+mode",
     r"(respond|reply|answer)\s+(only\s+with|(to\s+)?(every|all|each)\s+(question|message|prompt)s?\s+with)",
@@ -324,7 +323,8 @@ PATTERNS = [
     # fake chat turns and boundary markers
     r"<\|(im_start|im_end|system|assistant|user|endoftext)\|>|\[/?INST\]|<</?SYS>>",
     r"</?\s*(system|assistant|instructions?|untrusted[\w-]*|web[_-]?content|tool_result|function_results?|context)\s*>",
-    r"(^|\n)\s*(system|assistant)\s*:", r"={4,}\s*end\b|\bend\s+of\s+(the\s+)?(prompt|instructions|context|document)\b(?!\s+[a-z])",
+    r"={4,}\s*end\b|\bend\s+of\s+(the\s+)?(prompt|instructions|context|document)\b(?!\s+[a-z])",
+    r"(^|\n)\s*(system|assistant)\s*:.{0,200}(https?://|\S+@\S+\.\w|\b(open|visit|send|forward|email|upload|purchase|buy|pay|transfer|delete|run|execute|install|approve)\b)",   # fake turn that acts
     r'"(type|tool|function|name)"\s*:\s*"[^"]+"\s*,\s*"(arguments|parameters|input|args)"',   # fake tool-call JSON
     # command execution
     r"\b(curl|wget)\s+\S*https?://", r"\b(ncat|netcat)\b|\bnc\s+-[a-z]*e\b", r"base64\s+(-d|--decode)", r"\brm\s+-rf\s+[/~]",
@@ -471,7 +471,8 @@ def read(url, guard=False, max_chars=8000, page_block=PAGE_BLOCK):
 
 def _guard_filter(text, chunk_chars=1500):
     """Score ~1,500-char chunks; re-score flagged chunks per sentence and drop only flagged sentences,
-    so one false positive costs a sentence, not the page. If no single sentence is flagged, drop the chunk.
+    so one false positive costs a sentence, not the page. If no single line is flagged, the chunk is kept
+    (dropping it cost 2 more benign pages and stopped no extra attack across 112 test attacks).
     -> (text, removed_count, max_score). max_score is None without a classifier."""
     lines = [l for l in text.split("\n") if l.strip() and l != MARK]
     chunks, cur = [], []
@@ -492,8 +493,6 @@ def _guard_filter(text, chunk_chars=1500):
             kept += chunk
             continue
         bad = [guard_score(l) >= GUARD_THRESHOLD for l in chunk] if len(chunk) > 1 else [True]
-        if not any(bad):
-            bad = [True] * len(chunk)
         kept += [l for l, b in zip(chunk, bad) if not b]
         removed += sum(bad)
     return "\n".join(kept), removed, best
@@ -577,12 +576,17 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true", help="print JSON instead of text")
     ap.add_argument("--raw", action="store_true", help="print text without the untrusted-content wrapper")
     ap.add_argument("--guard", action="store_true", help="also score with an ML classifier (needs [guard] extra)")
+    ap.add_argument("--guard-threshold", type=float, default=None,
+                    help="classifier score that removes a sentence (default 0.8; 0.99 = fewer false positives, misses a few more)")
     ap.add_argument("--max-chars", type=int, default=8000)
     ap.add_argument("--page-block", type=int, default=PAGE_BLOCK,
                     help="drop the whole page if this many injection sentences are found (0 = never)")
     ap.add_argument("--mcp", action="store_true", help="run as an MCP server over stdio")
     ap.add_argument("--version", action="version", version=__version__)
     a = ap.parse_args(argv)
+    if a.guard_threshold is not None:
+        global GUARD_THRESHOLD
+        GUARD_THRESHOLD = a.guard_threshold
     if a.mcp:
         mcp(guard=a.guard)
         return 0
