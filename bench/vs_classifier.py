@@ -10,7 +10,8 @@ def naive(page):   # the common approach: strip tags (hidden text included) and 
     return re.sub(r"\s*\n\s*", "\n", html.unescape(re.sub(r"<[^>]+>", "\n", page))).strip()
 
 def protectai_only(page):
-    t, _, _ = s._guard_filter(naive(page)); return t
+    lines = s._lines(naive(page)); bad = s._classifier_lines(lines, s.GUARD_THRESHOLD) or {}
+    return "\n".join(l for i, l in enumerate(lines) if i not in bad)
 
 def ours(page):
     return s.clean(page, guard=True)["text"]

@@ -17,21 +17,22 @@ else:
     from indirect_cases import ATTACKS, BENIGN
 
 guard = "--guard" in sys.argv
+judge = sys.argv[sys.argv.index("--judge") + 1] if "--judge" in sys.argv else None
 stopped = 0
 for name, page, bad in ATTACKS:
-    r = s.clean(page, guard=guard)
+    r = s.clean(page, guard=guard, judge=judge)
     ok = not any(b in r["text"] for b in bad)
     stopped += ok
     print(f"{'STOP' if ok else 'MISS'}  {name}" + (f"  (score {r['guard_score']:.2f})" if r["guard_score"] is not None else ""))
 passed = false_pos = 0
 for name, page, good in BENIGN:
-    r = s.clean(page, guard=guard)
+    r = s.clean(page, guard=guard, judge=judge)
     ok = not r["blocked"] and all(g in r["text"] for g in good)
     fp = bool(r["blocked"] or r["removed"])   # the filter itself removed or blocked something
     passed += ok
     false_pos += fp
     tag = "PASS" if ok else ("FP  " if fp else "LOST")   # LOST: text not extracted (attribute, sr-only, <button>), not an injection verdict
     print(f"{tag}  {name}" + ("" if ok else f"  -> {r['blocked'] or r['text'][:80]!r}"))
-label = (s.GUARD_MODEL.split("/")[-1] if guard else "rules only") + (" | codex3" if "--codex3" in sys.argv else " | codex2" if "--codex2" in sys.argv else " | codex" if "--codex" in sys.argv else " | holdout2" if "--holdout2" in sys.argv else " | holdout" if "--holdout" in sys.argv else "")
+label = (s.GUARD_MODEL.split("/")[-1] if guard else "rules only") + (f" + judge {judge}" if judge else "") + (" | codex3" if "--codex3" in sys.argv else " | codex2" if "--codex2" in sys.argv else " | codex" if "--codex" in sys.argv else " | holdout2" if "--holdout2" in sys.argv else " | holdout" if "--holdout" in sys.argv else "")
 print(f"\n[{label}] attacks stopped {stopped}/{len(ATTACKS)}, benign pages intact {passed}/{len(BENIGN)}, "
       f"false positives {false_pos}/{len(BENIGN)}")
