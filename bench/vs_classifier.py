@@ -4,7 +4,7 @@ import html, os, re, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..")); sys.path.insert(0, HERE)
 import safewebfetch as s
-import indirect_cases as dev, indirect_holdout as ho, indirect_holdout2 as ho2, indirect_codex as cx, indirect_codex2 as cx2
+import indirect_cases as dev, indirect_holdout as ho, indirect_holdout2 as ho2, indirect_codex as cx, indirect_codex2 as cx2, indirect_codex3 as cx3
 
 def naive(page):   # the common approach: strip tags (hidden text included) and classify
     return re.sub(r"\s*\n\s*", "\n", html.unescape(re.sub(r"<[^>]+>", "\n", page))).strip()
@@ -15,7 +15,7 @@ def protectai_only(page):
 def ours(page):
     return s.clean(page, guard=True)["text"]
 
-for label, mod in [("dev", dev), ("holdout", ho), ("holdout2", ho2), ("codex", cx), ("codex2", cx2)]:
+for label, mod in [("dev", dev), ("holdout", ho), ("holdout2", ho2), ("codex", cx), ("codex2", cx2), ("codex3", cx3)]:
     for name, f in [("ProtectAI alone", protectai_only), ("safewebfetch --guard", ours)]:
         st = sum(not any(b in f(p) for b in bad) for _, p, bad in mod.ATTACKS)
         ok = sum(all(g in f(p) for g in good) for _, p, good in mod.BENIGN)

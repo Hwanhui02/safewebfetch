@@ -3,7 +3,9 @@
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import safewebfetch as s
-if "--codex2" in sys.argv:
+if "--codex3" in sys.argv:
+    from indirect_codex3 import ATTACKS, BENIGN
+elif "--codex2" in sys.argv:
     from indirect_codex2 import ATTACKS, BENIGN
 elif "--codex" in sys.argv:
     from indirect_codex import ATTACKS, BENIGN
@@ -30,6 +32,6 @@ for name, page, good in BENIGN:
     false_pos += fp
     tag = "PASS" if ok else ("FP  " if fp else "LOST")   # LOST: text not extracted (attribute, sr-only, <button>), not an injection verdict
     print(f"{tag}  {name}" + ("" if ok else f"  -> {r['blocked'] or r['text'][:80]!r}"))
-label = (s.GUARD_MODEL.split("/")[-1] if guard else "rules only") + (" | codex2" if "--codex2" in sys.argv else " | codex" if "--codex" in sys.argv else " | holdout2" if "--holdout2" in sys.argv else " | holdout" if "--holdout" in sys.argv else "")
+label = (s.GUARD_MODEL.split("/")[-1] if guard else "rules only") + (" | codex3" if "--codex3" in sys.argv else " | codex2" if "--codex2" in sys.argv else " | codex" if "--codex" in sys.argv else " | holdout2" if "--holdout2" in sys.argv else " | holdout" if "--holdout" in sys.argv else "")
 print(f"\n[{label}] attacks stopped {stopped}/{len(ATTACKS)}, benign pages intact {passed}/{len(BENIGN)}, "
       f"false positives {false_pos}/{len(BENIGN)}")
